@@ -1,10 +1,11 @@
 import os
 import sys
+
 # single thread doubles cuda performance - needs to be set before torch import
-if any(arg.startswith('--execution-provider') for arg in sys.argv):
-    os.environ['OMP_NUM_THREADS'] = '1'
+if any(arg.startswith("--execution-provider") for arg in sys.argv):
+    os.environ["OMP_NUM_THREADS"] = "1"
 # reduce tensorflow log level
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 import warnings
 from typing import List
 import platform
@@ -19,50 +20,181 @@ import modules.globals
 import modules.metadata
 import modules.ui as ui
 from modules.processors.frame.core import get_frame_processors_modules
-from modules.utilities import has_image_extension, is_image, is_video, detect_fps, create_video, extract_frames, get_temp_frame_paths, restore_audio, create_temp, move_temp, clean_temp, normalize_output_path
+from modules.utilities import (
+    has_image_extension,
+    is_image,
+    is_video,
+    detect_fps,
+    create_video,
+    extract_frames,
+    get_temp_frame_paths,
+    restore_audio,
+    create_temp,
+    move_temp,
+    clean_temp,
+    normalize_output_path,
+)
+from tqdm import tqdm
+import time
+from modules.flags import pause_flag, stop_flag
 
-if 'ROCMExecutionProvider' in modules.globals.execution_providers:
+if "ROCMExecutionProvider" in modules.globals.execution_providers:
     del torch
 
-warnings.filterwarnings('ignore', category=FutureWarning, module='insightface')
-warnings.filterwarnings('ignore', category=UserWarning, module='torchvision')
+warnings.filterwarnings("ignore", category=FutureWarning, module="insightface")
+warnings.filterwarnings("ignore", category=UserWarning, module="torchvision")
 
 
 def parse_args() -> None:
     signal.signal(signal.SIGINT, lambda signal_number, frame: destroy())
     program = argparse.ArgumentParser()
-    program.add_argument('-s', '--source', help='select an source image', dest='source_path')
-    program.add_argument('-t', '--target', help='select an target image or video', dest='target_path')
-    program.add_argument('-o', '--output', help='select output file or directory', dest='output_path')
-    program.add_argument('--frame-processor', help='pipeline of frame processors', dest='frame_processor', default=['face_swapper'], choices=['face_swapper', 'face_enhancer'], nargs='+')
-    program.add_argument('--keep-fps', help='keep original fps', dest='keep_fps', action='store_true', default=False)
-    program.add_argument('--keep-audio', help='keep original audio', dest='keep_audio', action='store_true', default=True)
-    program.add_argument('--keep-frames', help='keep temporary frames', dest='keep_frames', action='store_true', default=False)
-    program.add_argument('--many-faces', help='process every face', dest='many_faces', action='store_true', default=False)
-    program.add_argument('--nsfw-filter', help='filter the NSFW image or video', dest='nsfw_filter', action='store_true', default=False)
-    program.add_argument('--map-faces', help='map source target faces', dest='map_faces', action='store_true', default=False)
-    program.add_argument('--mouth-mask', help='mask the mouth region', dest='mouth_mask', action='store_true', default=False)
-    program.add_argument('--video-encoder', help='adjust output video encoder', dest='video_encoder', default='libx264', choices=['libx264', 'libx265', 'libvpx-vp9'])
-    program.add_argument('--video-quality', help='adjust output video quality', dest='video_quality', type=int, default=18, choices=range(52), metavar='[0-51]')
-    program.add_argument('-l', '--lang', help='Ui language', default="en")
-    program.add_argument('--live-mirror', help='The live camera display as you see it in the front-facing camera frame', dest='live_mirror', action='store_true', default=False)
-    program.add_argument('--live-resizable', help='The live camera frame is resizable', dest='live_resizable', action='store_true', default=False)
-    program.add_argument('--max-memory', help='maximum amount of RAM in GB', dest='max_memory', type=int, default=suggest_max_memory())
-    program.add_argument('--execution-provider', help='execution provider', dest='execution_provider', default=['cpu'], choices=suggest_execution_providers(), nargs='+')
-    program.add_argument('--execution-threads', help='number of execution threads', dest='execution_threads', type=int, default=suggest_execution_threads())
-    program.add_argument('-v', '--version', action='version', version=f'{modules.metadata.name} {modules.metadata.version}')
+    program.add_argument(
+        "-s", "--source", help="select an source image", dest="source_path"
+    )
+    program.add_argument(
+        "-t", "--target", help="select an target image or video", dest="target_path"
+    )
+    program.add_argument(
+        "-o", "--output", help="select output file or directory", dest="output_path"
+    )
+    program.add_argument(
+        "--frame-processor",
+        help="pipeline of frame processors",
+        dest="frame_processor",
+        default=["face_swapper"],
+        choices=["face_swapper", "face_enhancer"],
+        nargs="+",
+    )
+    program.add_argument(
+        "--keep-fps",
+        help="keep original fps",
+        dest="keep_fps",
+        action="store_true",
+        default=False,
+    )
+    program.add_argument(
+        "--keep-audio",
+        help="keep original audio",
+        dest="keep_audio",
+        action="store_true",
+        default=True,
+    )
+    program.add_argument(
+        "--keep-frames",
+        help="keep temporary frames",
+        dest="keep_frames",
+        action="store_true",
+        default=False,
+    )
+    program.add_argument(
+        "--many-faces",
+        help="process every face",
+        dest="many_faces",
+        action="store_true",
+        default=False,
+    )
+    program.add_argument(
+        "--nsfw-filter",
+        help="filter the NSFW image or video",
+        dest="nsfw_filter",
+        action="store_true",
+        default=False,
+    )
+    program.add_argument(
+        "--map-faces",
+        help="map source target faces",
+        dest="map_faces",
+        action="store_true",
+        default=False,
+    )
+    program.add_argument(
+        "--mouth-mask",
+        help="mask the mouth region",
+        dest="mouth_mask",
+        action="store_true",
+        default=False,
+    )
+    program.add_argument(
+        "--video-encoder",
+        help="adjust output video encoder",
+        dest="video_encoder",
+        default="libx264",
+        choices=["libx264", "libx265", "libvpx-vp9"],
+    )
+    program.add_argument(
+        "--video-quality",
+        help="adjust output video quality",
+        dest="video_quality",
+        type=int,
+        default=18,
+        choices=range(52),
+        metavar="[0-51]",
+    )
+    program.add_argument("-l", "--lang", help="Ui language", default="en")
+    program.add_argument(
+        "--live-mirror",
+        help="The live camera display as you see it in the front-facing camera frame",
+        dest="live_mirror",
+        action="store_true",
+        default=False,
+    )
+    program.add_argument(
+        "--live-resizable",
+        help="The live camera frame is resizable",
+        dest="live_resizable",
+        action="store_true",
+        default=False,
+    )
+    program.add_argument(
+        "--max-memory",
+        help="maximum amount of RAM in GB",
+        dest="max_memory",
+        type=int,
+        default=suggest_max_memory(),
+    )
+    program.add_argument(
+        "--execution-provider",
+        help="execution provider",
+        dest="execution_provider",
+        default=["cpu"],
+        choices=suggest_execution_providers(),
+        nargs="+",
+    )
+    program.add_argument(
+        "--execution-threads",
+        help="number of execution threads",
+        dest="execution_threads",
+        type=int,
+        default=suggest_execution_threads(),
+    )
+    program.add_argument(
+        "-v",
+        "--version",
+        action="version",
+        version=f"{modules.metadata.name} {modules.metadata.version}",
+    )
 
     # register deprecated args
-    program.add_argument('-f', '--face', help=argparse.SUPPRESS, dest='source_path_deprecated')
-    program.add_argument('--cpu-cores', help=argparse.SUPPRESS, dest='cpu_cores_deprecated', type=int)
-    program.add_argument('--gpu-vendor', help=argparse.SUPPRESS, dest='gpu_vendor_deprecated')
-    program.add_argument('--gpu-threads', help=argparse.SUPPRESS, dest='gpu_threads_deprecated', type=int)
+    program.add_argument(
+        "-f", "--face", help=argparse.SUPPRESS, dest="source_path_deprecated"
+    )
+    program.add_argument(
+        "--cpu-cores", help=argparse.SUPPRESS, dest="cpu_cores_deprecated", type=int
+    )
+    program.add_argument(
+        "--gpu-vendor", help=argparse.SUPPRESS, dest="gpu_vendor_deprecated"
+    )
+    program.add_argument(
+        "--gpu-threads", help=argparse.SUPPRESS, dest="gpu_threads_deprecated", type=int
+    )
 
     args = program.parse_args()
 
     modules.globals.source_path = args.source_path
     modules.globals.target_path = args.target_path
-    modules.globals.output_path = normalize_output_path(modules.globals.source_path, modules.globals.target_path, args.output_path)
+    modules.globals.output_path = normalize_output_path(
+        modules.globals.source_path, modules.globals.target_path, args.output_path
+    )
     modules.globals.frame_processors = args.frame_processor
     modules.globals.headless = args.source_path or args.target_path or args.output_path
     modules.globals.keep_fps = args.keep_fps
@@ -77,49 +209,77 @@ def parse_args() -> None:
     modules.globals.live_mirror = args.live_mirror
     modules.globals.live_resizable = args.live_resizable
     modules.globals.max_memory = args.max_memory
-    modules.globals.execution_providers = decode_execution_providers(args.execution_provider)
+    modules.globals.execution_providers = decode_execution_providers(
+        args.execution_provider
+    )
     modules.globals.execution_threads = args.execution_threads
     modules.globals.lang = args.lang
 
-    #for ENHANCER tumbler:
-    if 'face_enhancer' in args.frame_processor:
-        modules.globals.fp_ui['face_enhancer'] = True
+    # for ENHANCER tumbler:
+    if "face_enhancer" in args.frame_processor:
+        modules.globals.fp_ui["face_enhancer"] = True
     else:
-        modules.globals.fp_ui['face_enhancer'] = False
+        modules.globals.fp_ui["face_enhancer"] = False
 
     # translate deprecated args
     if args.source_path_deprecated:
-        print('\033[33mArgument -f and --face are deprecated. Use -s and --source instead.\033[0m')
+        print(
+            "\033[33mArgument -f and --face are deprecated. Use -s and --source instead.\033[0m"
+        )
         modules.globals.source_path = args.source_path_deprecated
-        modules.globals.output_path = normalize_output_path(args.source_path_deprecated, modules.globals.target_path, args.output_path)
+        modules.globals.output_path = normalize_output_path(
+            args.source_path_deprecated, modules.globals.target_path, args.output_path
+        )
     if args.cpu_cores_deprecated:
-        print('\033[33mArgument --cpu-cores is deprecated. Use --execution-threads instead.\033[0m')
+        print(
+            "\033[33mArgument --cpu-cores is deprecated. Use --execution-threads instead.\033[0m"
+        )
         modules.globals.execution_threads = args.cpu_cores_deprecated
-    if args.gpu_vendor_deprecated == 'apple':
-        print('\033[33mArgument --gpu-vendor apple is deprecated. Use --execution-provider coreml instead.\033[0m')
-        modules.globals.execution_providers = decode_execution_providers(['coreml'])
-    if args.gpu_vendor_deprecated == 'nvidia':
-        print('\033[33mArgument --gpu-vendor nvidia is deprecated. Use --execution-provider cuda instead.\033[0m')
-        modules.globals.execution_providers = decode_execution_providers(['cuda'])
-    if args.gpu_vendor_deprecated == 'amd':
-        print('\033[33mArgument --gpu-vendor amd is deprecated. Use --execution-provider cuda instead.\033[0m')
-        modules.globals.execution_providers = decode_execution_providers(['rocm'])
+    if args.gpu_vendor_deprecated == "apple":
+        print(
+            "\033[33mArgument --gpu-vendor apple is deprecated. Use --execution-provider coreml instead.\033[0m"
+        )
+        modules.globals.execution_providers = decode_execution_providers(["coreml"])
+    if args.gpu_vendor_deprecated == "nvidia":
+        print(
+            "\033[33mArgument --gpu-vendor nvidia is deprecated. Use --execution-provider cuda instead.\033[0m"
+        )
+        modules.globals.execution_providers = decode_execution_providers(["cuda"])
+    if args.gpu_vendor_deprecated == "amd":
+        print(
+            "\033[33mArgument --gpu-vendor amd is deprecated. Use --execution-provider cuda instead.\033[0m"
+        )
+        modules.globals.execution_providers = decode_execution_providers(["rocm"])
     if args.gpu_threads_deprecated:
-        print('\033[33mArgument --gpu-threads is deprecated. Use --execution-threads instead.\033[0m')
+        print(
+            "\033[33mArgument --gpu-threads is deprecated. Use --execution-threads instead.\033[0m"
+        )
         modules.globals.execution_threads = args.gpu_threads_deprecated
 
 
 def encode_execution_providers(execution_providers: List[str]) -> List[str]:
-    return [execution_provider.replace('ExecutionProvider', '').lower() for execution_provider in execution_providers]
+    return [
+        execution_provider.replace("ExecutionProvider", "").lower()
+        for execution_provider in execution_providers
+    ]
 
 
 def decode_execution_providers(execution_providers: List[str]) -> List[str]:
-    return [provider for provider, encoded_execution_provider in zip(onnxruntime.get_available_providers(), encode_execution_providers(onnxruntime.get_available_providers()))
-            if any(execution_provider in encoded_execution_provider for execution_provider in execution_providers)]
+    return [
+        provider
+        for provider, encoded_execution_provider in zip(
+            onnxruntime.get_available_providers(),
+            encode_execution_providers(onnxruntime.get_available_providers()),
+        )
+        if any(
+            execution_provider in encoded_execution_provider
+            for execution_provider in execution_providers
+        )
+    ]
 
 
 def suggest_max_memory() -> int:
-    if platform.system().lower() == 'darwin':
+    if platform.system().lower() == "darwin":
         return 4
     return 16
 
@@ -129,126 +289,260 @@ def suggest_execution_providers() -> List[str]:
 
 
 def suggest_execution_threads() -> int:
-    if 'DmlExecutionProvider' in modules.globals.execution_providers:
+    if "DmlExecutionProvider" in modules.globals.execution_providers:
         return 1
-    if 'ROCMExecutionProvider' in modules.globals.execution_providers:
+    if "ROCMExecutionProvider" in modules.globals.execution_providers:
         return 1
     return 8
 
 
 def limit_resources() -> None:
     # prevent tensorflow memory leak
-    gpus = tensorflow.config.experimental.list_physical_devices('GPU')
+    gpus = tensorflow.config.experimental.list_physical_devices("GPU")
     for gpu in gpus:
         tensorflow.config.experimental.set_memory_growth(gpu, True)
     # limit memory usage
     if modules.globals.max_memory:
-        memory = modules.globals.max_memory * 1024 ** 3
-        if platform.system().lower() == 'darwin':
-            memory = modules.globals.max_memory * 1024 ** 6
-        if platform.system().lower() == 'windows':
+        memory = modules.globals.max_memory * 1024**3
+        if platform.system().lower() == "darwin":
+            memory = modules.globals.max_memory * 1024**6
+        if platform.system().lower() == "windows":
             import ctypes
+
             kernel32 = ctypes.windll.kernel32
-            kernel32.SetProcessWorkingSetSize(-1, ctypes.c_size_t(memory), ctypes.c_size_t(memory))
+            kernel32.SetProcessWorkingSetSize(
+                -1, ctypes.c_size_t(memory), ctypes.c_size_t(memory)
+            )
         else:
             import resource
+
             resource.setrlimit(resource.RLIMIT_DATA, (memory, memory))
 
 
 def release_resources() -> None:
-    if 'CUDAExecutionProvider' in modules.globals.execution_providers:
+    if "CUDAExecutionProvider" in modules.globals.execution_providers:
         torch.cuda.empty_cache()
 
 
 def pre_check() -> bool:
     if sys.version_info < (3, 9):
-        update_status('Python version is not supported - please upgrade to 3.9 or higher.')
+        update_status(
+            "Python version is not supported - please upgrade to 3.9 or higher."
+        )
         return False
-    if not shutil.which('ffmpeg'):
-        update_status('ffmpeg is not installed.')
+    if not shutil.which("ffmpeg"):
+        update_status("ffmpeg is not installed.")
         return False
     return True
 
 
-def update_status(message: str, scope: str = 'DLC.CORE') -> None:
-    print(f'[{scope}] {message}')
+def update_status(message: str, scope: str = "DLC.CORE") -> None:
+    print(f"[{scope}] {message}")
     if not modules.globals.headless:
         ui.update_status(message)
 
+
+def process_video_in_memory(
+    source_path: str, target_path: str, output_path: str
+) -> None:
+    import cv2
+    import time
+    from tqdm import tqdm
+
+    # Load the source image
+    source_image = cv2.imread(source_path)
+    if source_image is None:
+        update_status("Failed to load source image.", "DLC.CORE")
+        return
+
+    # If map_faces is not enabled, load the source face into source_target_map
+    if not modules.globals.map_faces:
+        from modules.face_analyser import get_one_face
+
+        source_face = get_one_face(source_image)
+        if source_face is None:
+            update_status("No face detected in source image.", "DLC.CORE")
+            return
+        modules.globals.source_target_map = [
+            {
+                "id": 0,
+                "source": {"face": source_face},
+            }
+        ]
+
+    # Open the input video
+    video_capture = cv2.VideoCapture(target_path)
+    if not video_capture.isOpened():
+        update_status("Failed to open target video.", "DLC.CORE")
+        return
+
+    # Get video properties
+    fps = video_capture.get(cv2.CAP_PROP_FPS) if modules.globals.keep_fps else 30.0
+    width = int(video_capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    total_frames = int(video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
+    fourcc = cv2.VideoWriter_fourcc(*modules.globals.video_encoder[:4])
+
+    # Open the output video writer
+    video_writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+    if not video_writer.isOpened():
+        update_status("Failed to open output video writer.", "DLC.CORE")
+        video_capture.release()
+        return
+
+    # Initialize progress bar
+    start_time = time.time()
+    with tqdm(
+        total=total_frames, desc="Processing Video", unit="frame", dynamic_ncols=True
+    ) as pbar:
+        frame_index = 0
+        while True:
+            # Check if stopped
+            if stop_flag.is_set():
+                update_status("Processing stopped by user.", "DLC.CORE")
+                break
+
+            # Check if paused
+            if not pause_flag.is_set():
+                time.sleep(0.1)  # Sleep briefly to avoid busy-waiting
+                continue
+
+            ret, frame = video_capture.read()
+            if not ret:
+                break  # End of video
+
+            try:
+                # Process the frame using the frame processors
+                for frame_processor in get_frame_processors_modules(
+                    modules.globals.frame_processors
+                ):
+                    # Update status in the progress bar instead of printing a new line
+                    pbar.set_description(
+                        f"[{frame_processor.NAME}] Processing frame {frame_index}..."
+                    )
+                    frame = frame_processor.process_frame_v2(
+                        frame, temp_frame_path=f"frame_{frame_index}"
+                    )
+
+                # Write the processed frame to the output video
+                video_writer.write(frame)
+
+                # Update progress bar
+                elapsed_time = time.time() - start_time
+                frames_processed = frame_index + 1
+                speed = frames_processed / elapsed_time if elapsed_time > 0 else 0
+                remaining_time = (
+                    (total_frames - frames_processed) / speed if speed > 0 else 0
+                )
+                pbar.set_postfix(
+                    {
+                        "it/s": f"{speed:.2f}",
+                        "ETA": f"{remaining_time:.2f}s",
+                        "Frame": f"{frames_processed}/{total_frames}",
+                    }
+                )
+                pbar.update(1)
+                frame_index += 1
+            except Exception as e:
+                # Log errors without breaking the progress bar
+                pbar.write(f"Error processing frame {frame_index}: {str(e)}")
+                continue
+
+    # Release resources
+    video_capture.release()
+    video_writer.release()
+    cv2.destroyAllWindows()  # Close all OpenCV windows
+    update_status("Video processing completed!", "DLC.CORE")
+
+
+import threading
+
+# Global thread for video processing
+processing_thread = None
+
+
 def start() -> None:
-    for frame_processor in get_frame_processors_modules(modules.globals.frame_processors):
+    global processing_thread
+
+    # Ensure no existing thread is running
+    if processing_thread and processing_thread.is_alive():
+        update_status("Video processing is already running.", "DLC.CORE")
+        return
+
+    # Reset stop flag
+    stop_flag.clear()
+
+    # Start video processing in a separate thread
+    processing_thread = threading.Thread(target=__start)
+    processing_thread.daemon = True  # Ensure thread exits when main program exits
+    processing_thread.start()
+
+
+def __start() -> None:
+    for frame_processor in get_frame_processors_modules(
+        modules.globals.frame_processors
+    ):
         if not frame_processor.pre_start():
             return
-    update_status('Processing...')
-    # process image to image
+    update_status("Processing...")
+
+    # Process image to image
     if has_image_extension(modules.globals.target_path):
-        if modules.globals.nsfw_filter and ui.check_and_ignore_nsfw(modules.globals.target_path, destroy):
+        if modules.globals.nsfw_filter and ui.check_and_ignore_nsfw(
+            modules.globals.target_path, destroy
+        ):
             return
         try:
             shutil.copy2(modules.globals.target_path, modules.globals.output_path)
         except Exception as e:
             print("Error copying file:", str(e))
-        for frame_processor in get_frame_processors_modules(modules.globals.frame_processors):
-            update_status('Progressing...', frame_processor.NAME)
-            frame_processor.process_image(modules.globals.source_path, modules.globals.output_path, modules.globals.output_path)
+        for frame_processor in get_frame_processors_modules(
+            modules.globals.frame_processors
+        ):
+            update_status("Progressing...", frame_processor.NAME)
+            frame_processor.process_image(
+                modules.globals.source_path,
+                modules.globals.output_path,
+                modules.globals.output_path,
+            )
             release_resources()
         if is_image(modules.globals.target_path):
-            update_status('Processing to image succeed!')
+            update_status("Processing to image succeed!")
         else:
-            update_status('Processing to image failed!')
-        return
-    # process image to videos
-    if modules.globals.nsfw_filter and ui.check_and_ignore_nsfw(modules.globals.target_path, destroy):
-        return
+            update_status("Processing to image failed!")
 
-    if not modules.globals.map_faces:
-        update_status('Creating temp resources...')
-        create_temp(modules.globals.target_path)
-        update_status('Extracting frames...')
-        extract_frames(modules.globals.target_path)
-
-    temp_frame_paths = get_temp_frame_paths(modules.globals.target_path)
-    for frame_processor in get_frame_processors_modules(modules.globals.frame_processors):
-        update_status('Progressing...', frame_processor.NAME)
-        frame_processor.process_video(modules.globals.source_path, temp_frame_paths)
-        release_resources()
-    # handles fps
-    if modules.globals.keep_fps:
-        update_status('Detecting fps...')
-        fps = detect_fps(modules.globals.target_path)
-        update_status(f'Creating video with {fps} fps...')
-        create_video(modules.globals.target_path, fps)
-    else:
-        update_status('Creating video with 30.0 fps...')
-        create_video(modules.globals.target_path)
-    # handle audio
-    if modules.globals.keep_audio:
-        if modules.globals.keep_fps:
-            update_status('Restoring audio...')
-        else:
-            update_status('Restoring audio might cause issues as fps are not kept...')
-        restore_audio(modules.globals.target_path, modules.globals.output_path)
-    else:
-        move_temp(modules.globals.target_path, modules.globals.output_path)
-    # clean and validate
-    clean_temp(modules.globals.target_path)
+    # Process video in memory
     if is_video(modules.globals.target_path):
-        update_status('Processing to video succeed!')
-    else:
-        update_status('Processing to video failed!')
+        if modules.globals.nsfw_filter and ui.check_and_ignore_nsfw(
+            modules.globals.target_path, destroy
+        ):
+            return
+        process_video_in_memory(
+            modules.globals.source_path,
+            modules.globals.target_path,
+            modules.globals.output_path,
+        )
+
+    # Reset the Start button
+    from modules.ui import stop_processing
+
+    stop_processing()
 
 
 def destroy(to_quit=True) -> None:
     if modules.globals.target_path:
         clean_temp(modules.globals.target_path)
-    if to_quit: quit()
+    if to_quit:
+        quit()
 
 
 def run() -> None:
     parse_args()
     if not pre_check():
         return
-    for frame_processor in get_frame_processors_modules(modules.globals.frame_processors):
+    for frame_processor in get_frame_processors_modules(
+        modules.globals.frame_processors
+    ):
         if not frame_processor.pre_check():
             return
     limit_resources()

@@ -32,6 +32,8 @@ import platform
 if platform.system() == "Windows":
     from pygrabber.dshow_graph import FilterGraph
 
+from modules.flags import pause_flag, stop_flag
+
 ROOT = None
 POPUP = None
 POPUP_LIVE = None
@@ -75,6 +77,7 @@ popup_status_label_live = None
 source_label_dict = {}
 source_label_dict_live = {}
 target_label_dict_live = {}
+start_pause_button = None
 
 img_ft, vid_ft = modules.globals.file_types
 
@@ -158,7 +161,10 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
     target_label.place(relx=0.6, rely=0.1, relwidth=0.3, relheight=0.25)
 
     select_face_button = ctk.CTkButton(
-        root, text=_("Select a face"), cursor="hand2", command=lambda: select_source_path()
+        root,
+        text=_("Select a face"),
+        cursor="hand2",
+        command=lambda: select_source_path(),
     )
     select_face_button.place(relx=0.1, rely=0.4, relwidth=0.3, relheight=0.1)
 
@@ -266,7 +272,7 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
         command=lambda: (
             setattr(modules.globals, "map_faces", map_faces.get()),
             save_switch_states(),
-            close_mapper_window() if not map_faces.get() else None
+            close_mapper_window() if not map_faces.get() else None,
         ),
     )
     map_faces_switch.place(relx=0.1, rely=0.75)
@@ -306,13 +312,20 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
     )
     show_mouth_mask_box_switch.place(relx=0.6, rely=0.55)
 
-    start_button = ctk.CTkButton(
-        root, text=_("Start"), cursor="hand2", command=lambda: analyze_target(start, root)
+    global start_pause_button
+    start_pause_button = ctk.CTkButton(
+        root,
+        text="Start",
+        cursor="hand2",
+        command=lambda: toggle_start_pause(start_pause_button, start, root),
     )
-    start_button.place(relx=0.15, rely=0.80, relwidth=0.2, relheight=0.05)
+    start_pause_button.place(relx=0.15, rely=0.80, relwidth=0.2, relheight=0.05)
 
     stop_button = ctk.CTkButton(
-        root, text=_("Destroy"), cursor="hand2", command=lambda: destroy()
+        root,
+        text="Stop",
+        cursor="hand2",
+        command=lambda: stop_processing(),
     )
     stop_button.place(relx=0.4, rely=0.80, relwidth=0.2, relheight=0.05)
 
@@ -381,6 +394,7 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
 
     return root
 
+
 def close_mapper_window():
     global POPUP, POPUP_LIVE
     if POPUP and POPUP.winfo_exists():
@@ -415,7 +429,7 @@ def analyze_target(start: Callable[[], None], root: ctk.CTk):
 
 
 def create_source_target_popup(
-        start: Callable[[], None], root: ctk.CTk, map: list
+    start: Callable[[], None], root: ctk.CTk, map: list
 ) -> None:
     global POPUP, popup_status_label
 
@@ -484,7 +498,7 @@ def create_source_target_popup(
 
 
 def update_popup_source(
-        scrollable_frame: ctk.CTkScrollableFrame, map: list, button_num: int
+    scrollable_frame: ctk.CTkScrollableFrame, map: list, button_num: int
 ) -> list:
     global source_label_dict
 
@@ -509,7 +523,7 @@ def update_popup_source(
             x_min, y_min, x_max, y_max = face["bbox"]
 
             map[button_num]["source"] = {
-                "cv2": cv2_img[int(y_min): int(y_max), int(x_min): int(x_max)],
+                "cv2": cv2_img[int(y_min) : int(y_max), int(x_min) : int(x_max)],
                 "face": face,
             }
 
@@ -705,7 +719,7 @@ def fit_image_to_size(image, width: int, height: int):
     ratio_h = height / h
     # Use the smaller ratio to ensure the image fits within the given dimensions
     ratio = min(ratio_w, ratio_h)
-    
+
     # Compute new dimensions, ensuring they're at least 1 pixel
     new_width = max(1, int(ratio * w))
     new_height = max(1, int(ratio * h))
@@ -722,7 +736,7 @@ def render_image_preview(image_path: str, size: Tuple[int, int]) -> ctk.CTkImage
 
 
 def render_video_preview(
-        video_path: str, size: Tuple[int, int], frame_number: int = 0
+    video_path: str, size: Tuple[int, int], frame_number: int = 0
 ) -> ctk.CTkImage:
     capture = cv2.VideoCapture(video_path)
     if frame_number:
@@ -745,6 +759,25 @@ def toggle_preview() -> None:
         update_preview()
 
 
+def toggle_start_pause(button: ctk.CTkButton, start, root) -> None:
+    if button.cget("text") == "Start":
+        button.configure(text="Pause")
+        pause_flag.set()  # Resume processing
+        analyze_target(start, root)
+    elif button.cget("text") == "Pause":
+        button.configure(text="Resume")
+        pause_flag.clear()  # Pause processing
+    elif button.cget("text") == "Resume":
+        button.configure(text="Pause")
+        pause_flag.set()  # Resume processing
+
+
+def stop_processing() -> None:
+    stop_flag.set()  # Signal to stop processing
+    pause_flag.set()  # Ensure processing is not paused
+    start_pause_button.configure(text="Start")  # Reset button to "Start"
+
+
 def init_preview() -> None:
     if is_image(modules.globals.target_path):
         preview_slider.pack_forget()
@@ -762,7 +795,7 @@ def update_preview(frame_number: int = 0) -> None:
         if modules.globals.nsfw_filter and check_and_ignore_nsfw(temp_frame):
             return
         for frame_processor in get_frame_processors_modules(
-                modules.globals.frame_processors
+            modules.globals.frame_processors
         ):
             temp_frame = frame_processor.process_frame(
                 get_one_face(cv2.imread(modules.globals.source_path)), temp_frame
@@ -795,7 +828,6 @@ def webcam_preview(root: ctk.CTk, camera_index: int):
         create_source_target_popup_for_webcam(
             root, modules.globals.source_target_map, camera_index
         )
-
 
 
 def get_available_cameras():
@@ -961,7 +993,7 @@ def create_webcam_preview(camera_index: int):
 
 
 def create_source_target_popup_for_webcam(
-        root: ctk.CTk, map: list, camera_index: int
+    root: ctk.CTk, map: list, camera_index: int
 ) -> None:
     global POPUP_LIVE, popup_status_label_live
 
@@ -991,17 +1023,20 @@ def create_source_target_popup_for_webcam(
     popup_status_label_live = ctk.CTkLabel(POPUP_LIVE, text=None, justify="center")
     popup_status_label_live.grid(row=1, column=0, pady=15)
 
-    add_button = ctk.CTkButton(POPUP_LIVE, text=_("Add"), command=lambda: on_add_click())
+    add_button = ctk.CTkButton(
+        POPUP_LIVE, text=_("Add"), command=lambda: on_add_click()
+    )
     add_button.place(relx=0.1, rely=0.92, relwidth=0.2, relheight=0.05)
 
-    clear_button = ctk.CTkButton(POPUP_LIVE, text=_("Clear"), command=lambda: on_clear_click())
+    clear_button = ctk.CTkButton(
+        POPUP_LIVE, text=_("Clear"), command=lambda: on_clear_click()
+    )
     clear_button.place(relx=0.4, rely=0.92, relwidth=0.2, relheight=0.05)
 
     close_button = ctk.CTkButton(
         POPUP_LIVE, text=_("Submit"), command=lambda: on_submit_click()
     )
     close_button.place(relx=0.7, rely=0.92, relwidth=0.2, relheight=0.05)
-
 
 
 def clear_source_target_images(map: list):
@@ -1103,7 +1138,7 @@ def refresh_data(map: list):
 
 
 def update_webcam_source(
-        scrollable_frame: ctk.CTkScrollableFrame, map: list, button_num: int
+    scrollable_frame: ctk.CTkScrollableFrame, map: list, button_num: int
 ) -> list:
     global source_label_dict_live
 
@@ -1128,7 +1163,7 @@ def update_webcam_source(
             x_min, y_min, x_max, y_max = face["bbox"]
 
             map[button_num]["source"] = {
-                "cv2": cv2_img[int(y_min): int(y_max), int(x_min): int(x_max)],
+                "cv2": cv2_img[int(y_min) : int(y_max), int(x_min) : int(x_max)],
                 "face": face,
             }
 
@@ -1155,7 +1190,7 @@ def update_webcam_source(
 
 
 def update_webcam_target(
-        scrollable_frame: ctk.CTkScrollableFrame, map: list, button_num: int
+    scrollable_frame: ctk.CTkScrollableFrame, map: list, button_num: int
 ) -> list:
     global target_label_dict_live
 
@@ -1180,7 +1215,7 @@ def update_webcam_target(
             x_min, y_min, x_max, y_max = face["bbox"]
 
             map[button_num]["target"] = {
-                "cv2": cv2_img[int(y_min): int(y_max), int(x_min): int(x_max)],
+                "cv2": cv2_img[int(y_min) : int(y_max), int(x_min) : int(x_max)],
                 "face": face,
             }
 

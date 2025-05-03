@@ -119,94 +119,50 @@ def process_frame(source_face: Face, temp_frame: Frame) -> Frame:
     return temp_frame
 
 
+def validate_source_target_map():
+    valid_map = []
+    for map in modules.globals.source_target_map:
+        if "source" in map and "target" in map:
+            if map["source"]["face"] is not None and map["target"]["face"] is not None:
+                valid_map.append(map)
+            else:
+                print(f"Invalid mapping skipped: {map}")
+    modules.globals.source_target_map = valid_map
+
 
 def process_frame_v2(temp_frame: Frame, temp_frame_path: str = "") -> Frame:
-    if is_image(modules.globals.target_path):
-        if modules.globals.many_faces:
-            source_face = default_source_face()
-            for map in modules.globals.source_target_map:
+    if modules.globals.map_faces:
+        for map in modules.globals.source_target_map:
+            if "source" in map and "target" in map:
+                source_face = map["source"]["face"]
                 target_face = map["target"]["face"]
+
+                # Add null checks for source and target faces
+                if source_face is None or target_face is None:
+                    print(
+                        f"Skipping frame {temp_frame_path}: Missing source or target face."
+                    )
+                    continue
+
                 temp_frame = swap_face(source_face, target_face, temp_frame)
-
-        elif not modules.globals.many_faces:
-            for map in modules.globals.source_target_map:
-                if "source" in map:
-                    source_face = map["source"]["face"]
-                    target_face = map["target"]["face"]
-                    temp_frame = swap_face(source_face, target_face, temp_frame)
-
-    elif is_video(modules.globals.target_path):
-        if modules.globals.many_faces:
-            source_face = default_source_face()
-            for map in modules.globals.source_target_map:
-                target_frame = [
-                    f
-                    for f in map["target_faces_in_frame"]
-                    if f["location"] == temp_frame_path
-                ]
-
-                for frame in target_frame:
-                    for target_face in frame["faces"]:
-                        temp_frame = swap_face(source_face, target_face, temp_frame)
-
-        elif not modules.globals.many_faces:
-            for map in modules.globals.source_target_map:
-                if "source" in map:
-                    target_frame = [
-                        f
-                        for f in map["target_faces_in_frame"]
-                        if f["location"] == temp_frame_path
-                    ]
-                    source_face = map["source"]["face"]
-
-                    for frame in target_frame:
-                        for target_face in frame["faces"]:
-                            temp_frame = swap_face(source_face, target_face, temp_frame)
-
     else:
         detected_faces = get_many_faces(temp_frame)
-        if modules.globals.many_faces:
-            if detected_faces:
-                source_face = default_source_face()
-                for target_face in detected_faces:
-                    temp_frame = swap_face(source_face, target_face, temp_frame)
+        if detected_faces:
+            for target_face in detected_faces:
+                if target_face is None:
+                    print(
+                        f"Skipping a target face in frame {temp_frame_path}: Target face is None."
+                    )
+                    continue
 
-        elif not modules.globals.many_faces:
-            if detected_faces:
-                if len(detected_faces) <= len(
-                    modules.globals.simple_map["target_embeddings"]
-                ):
-                    for detected_face in detected_faces:
-                        closest_centroid_index, _ = find_closest_centroid(
-                            modules.globals.simple_map["target_embeddings"],
-                            detected_face.normed_embedding,
-                        )
+                # Use the first source face from source_target_map
+                source_face = modules.globals.source_target_map[0]["source"]["face"]
+                temp_frame = swap_face(source_face, target_face, temp_frame)
 
-                        temp_frame = swap_face(
-                            modules.globals.simple_map["source_faces"][
-                                closest_centroid_index
-                            ],
-                            detected_face,
-                            temp_frame,
-                        )
-                else:
-                    detected_faces_centroids = []
-                    for face in detected_faces:
-                        detected_faces_centroids.append(face.normed_embedding)
-                    i = 0
-                    for target_embedding in modules.globals.simple_map[
-                        "target_embeddings"
-                    ]:
-                        closest_centroid_index, _ = find_closest_centroid(
-                            detected_faces_centroids, target_embedding
-                        )
+    # Display the processed frame
+    cv2.imshow("Processed Frame", temp_frame)
+    cv2.waitKey(1)  # Wait for 1 ms to allow the frame to be displayed
 
-                        temp_frame = swap_face(
-                            modules.globals.simple_map["source_faces"][i],
-                            detected_faces[closest_centroid_index],
-                            temp_frame,
-                        )
-                        i += 1
     return temp_frame
 
 

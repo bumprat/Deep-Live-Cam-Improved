@@ -51,6 +51,7 @@ def pre_start() -> bool:
 TENSORRT_AVAILABLE = False
 try:
     import torch_tensorrt
+
     TENSORRT_AVAILABLE = True
 except ImportError as im:
     print(f"TensorRT is not available: {im}")
@@ -59,13 +60,14 @@ except Exception as e:
     print(f"TensorRT is not available: {e}")
     pass
 
+
 def get_face_enhancer() -> Any:
     global FACE_ENHANCER
 
     with THREAD_LOCK:
         if FACE_ENHANCER is None:
             model_path = os.path.join(models_dir, "GFPGANv1.4.pth")
-            
+
             selected_device = None
             device_priority = []
 
@@ -81,11 +83,15 @@ def get_face_enhancer() -> Any:
             elif not torch.cuda.is_available():
                 selected_device = torch.device("cpu")
                 device_priority.append("CPU")
-            
-            FACE_ENHANCER = gfpgan.GFPGANer(model_path=model_path, upscale=1, device=selected_device)
+
+            FACE_ENHANCER = gfpgan.GFPGANer(
+                model_path=model_path, upscale=1, device=selected_device
+            )
 
             # for debug:
-            print(f"Selected device: {selected_device} and device priority: {device_priority}")
+            print(
+                f"Selected device: {selected_device} and device priority: {device_priority}"
+            )
     return FACE_ENHANCER
 
 
@@ -123,7 +129,7 @@ def process_video(source_path: str, temp_frame_paths: List[str]) -> None:
     modules.processors.frame.core.process_video(None, temp_frame_paths, process_frames)
 
 
-def process_frame_v2(temp_frame: Frame) -> Frame:
+def process_frame_v2(temp_frame: Frame, temp_frame_path: str = "") -> Frame:
     target_face = get_one_face(temp_frame)
     if target_face:
         temp_frame = enhance_face(temp_frame)
