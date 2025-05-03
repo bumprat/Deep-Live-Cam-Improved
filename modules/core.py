@@ -118,8 +118,8 @@ def parse_args() -> None:
         "--video-encoder",
         help="adjust output video encoder",
         dest="video_encoder",
-        default="libx264",
-        choices=["libx264", "libx265", "libvpx-vp9"],
+        default="mp4v",
+        choices=["mp4v", "libx264", "libx265", "libvpx-vp9"],
     )
     program.add_argument(
         "--video-quality",
